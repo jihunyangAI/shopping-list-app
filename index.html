@@ -137,6 +137,12 @@
       padding: 4px 0;
     }
     .clear-btn:hover { color: var(--danger); }
+    .status {
+      margin: 0 0 12px;
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+    .status.error { color: var(--danger); }
   </style>
 </head>
 <body>
@@ -149,37 +155,95 @@
       <button type="submit" class="add-btn">추가</button>
     </form>
 
-    <ul id="list"></ul>
-    <p class="empty" id="empty">아직 아무것도 없어요. 위에서 추가해 보세요.</p>
+    <p class="status" id="status" role="status" aria-live="polite">불러오는 중…</p>
+    <ul id="list" hidden></ul>
+    <p class="empty" id="empty" hidden>아직 아무것도 없어요. 위에서 추가해 보세요.</p>
     <button type="button" class="clear-btn" id="clear-done" hidden>체크한 항목 모두 삭제</button>
   </main>
 
-  <script>
-    const STORAGE_KEY = "shopping-list-items";
+  <script type="module">
+    import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/+esm";
+
+    // 공개용(publishable) 키라 브라우저 코드에 들어가도 되는 값. 접근 제어는 테이블의 RLS 정책이 담당.
+    const SUPABASE_URL = "https://ayzcqgmszkwjzkltbyxu.supabase.co";
+    const SUPABASE_KEY = "sb_publishable_4beeMxSkmVGV86clPDiCtQ_sCvnSJ7f";
+    const TABLE = "shopping_item";
+    // 이전 버전이 localStorage에 쓰던 키. 처음 실행할 때 DB로 옮긴 뒤 지운다.
+    const LEGACY_STORAGE_KEY = "shopping-list-items";
+
+    const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+      auth: { persistSession: false },
+    });
 
     const form = document.getElementById("add-form");
     const input = document.getElementById("item-input");
     const list = document.getElementById("list");
     const empty = document.getElementById("empty");
     const summary = document.getElementById("summary");
+    const statusEl = document.getElementById("status");
     const clearDone = document.getElementById("clear-done");
 
-    let items = load();
+    let items = [];
+    let loaded = false;
 
-    function load() {
+    function setStatus(message, isError = false) {
+      statusEl.textContent = message;
+      statusEl.classList.toggle("error", isError);
+      statusEl.hidden = !message;
+    }
+
+    function fail(action, error) {
+      console.error(action, error);
+      setStatus(`${action}에 실패했어요. 잠시 후 다시 시도해 주세요.`, true);
+    }
+
+    function readLegacyItems() {
       try {
-        return JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
+        const raw = localStorage.getItem(LEGACY_STORAGE_KEY);
+        if (raw === null) return null;
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
       } catch {
-        return [];
+        return []; // 깨진 데이터는 옮길 것이 없는 것으로 취급
       }
     }
 
-    function save() {
+    function removeLegacyItems() {
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+        localStorage.removeItem(LEGACY_STORAGE_KEY);
       } catch {
-        // 저장이 막힌 환경(시크릿 창 등)에서는 메모리에만 유지
+        // 저장소 접근이 막힌 환경(시크릿 창 등)은 무시
       }
+    }
+
+    async function migrateLegacyItems() {
+      const legacy = readLegacyItems();
+      if (legacy === null) return;
+
+      const base = Date.now();
+      const rows = legacy
+        .filter((item) => item && typeof item.name === "string" && item.name.trim())
+        .map((item, index) => ({
+          name: item.name.trim().slice(0, 100),
+          done: Boolean(item.done),
+          // 여러 줄을 한 번에 넣어도 원래 순서가 유지되도록 시간을 1ms씩 벌린다
+          created_at: new Date(base + index).toISOString(),
+        }));
+
+      if (rows.length) {
+        const { error } = await supabase.from(TABLE).insert(rows);
+        if (error) throw error; // 실패하면 localStorage를 지우지 않아 다음에 다시 시도
+      }
+      removeLegacyItems();
+    }
+
+    async function loadItems() {
+      const { data, error } = await supabase
+        .from(TABLE)
+        .select("id, name, done, created_at")
+        .order("created_at", { ascending: true });
+      if (error) throw error;
+      items = data;
     }
 
     function render() {
@@ -193,7 +257,7 @@
         checkbox.type = "checkbox";
         checkbox.checked = item.done;
         checkbox.setAttribute("aria-label", `${item.name} 체크`);
-        checkbox.addEventListener("change", () => toggle(item.id));
+        checkbox.addEventListener("change", () => toggle(item.id, checkbox));
 
         const name = document.createElement("span");
         name.className = "name";
@@ -211,49 +275,88 @@
       }
 
       const doneCount = items.filter((i) => i.done).length;
-      list.hidden = items.length === 0;
-      empty.hidden = items.length > 0;
+      list.hidden = !loaded || items.length === 0;
+      empty.hidden = !loaded || items.length > 0;
       clearDone.hidden = doneCount === 0;
       summary.textContent = items.length
         ? `${items.length}개 중 ${doneCount}개 담음`
         : "";
     }
 
-    function add(name) {
-      items.push({ id: crypto.randomUUID(), name, done: false });
-      save();
+    async function add(name) {
+      const { data, error } = await supabase
+        .from(TABLE)
+        .insert({ name })
+        .select("id, name, done, created_at")
+        .single();
+      if (error) {
+        fail("추가", error);
+        return false;
+      }
+      items.push(data);
+      setStatus("");
       render();
+      return true;
     }
 
-    function toggle(id) {
+    async function toggle(id, checkbox) {
       const item = items.find((i) => i.id === id);
-      if (item) item.done = !item.done;
-      save();
+      if (!item) return;
+      const done = !item.done;
+      const { error } = await supabase.from(TABLE).update({ done }).eq("id", id);
+      if (error) {
+        checkbox.checked = item.done; // 화면을 저장된 상태로 되돌림
+        return fail("체크 변경", error);
+      }
+      item.done = done;
+      setStatus("");
       render();
     }
 
-    function remove(id) {
+    async function remove(id) {
+      const { error } = await supabase.from(TABLE).delete().eq("id", id);
+      if (error) return fail("삭제", error);
       items = items.filter((i) => i.id !== id);
-      save();
+      setStatus("");
       render();
     }
 
-    form.addEventListener("submit", (e) => {
+    form.addEventListener("submit", async (e) => {
       e.preventDefault();
       const name = input.value.trim();
       if (!name) return;
-      add(name);
-      input.value = "";
+      // 저장에 성공했을 때만 입력창을 비워, 실패하면 다시 시도할 수 있게 한다
+      if (await add(name)) input.value = "";
       input.focus();
     });
 
-    clearDone.addEventListener("click", () => {
-      items = items.filter((i) => !i.done);
-      save();
+    clearDone.addEventListener("click", async () => {
+      const doneIds = items.filter((i) => i.done).map((i) => i.id);
+      if (!doneIds.length) return;
+      const { error } = await supabase.from(TABLE).delete().in("id", doneIds);
+      if (error) return fail("삭제", error);
+      items = items.filter((i) => !doneIds.includes(i.id));
+      setStatus("");
       render();
     });
 
-    render();
+    async function start() {
+      try {
+        await migrateLegacyItems();
+      } catch (error) {
+        console.error("기존 목록 옮기기", error);
+      }
+      try {
+        await loadItems();
+        loaded = true;
+        setStatus("");
+      } catch (error) {
+        fail("목록 불러오기", error);
+      }
+      render();
+    }
+
+    start();
   </script>
 </body>
 </html>
