@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>쇼핑 리스트</title>
+  <style>
+    :root {
+      --bg: #f6f5f2;
+      --card: #ffffff;
+      --text: #1f1f1f;
+      --muted: #8a8a8a;
+      --line: #e6e4df;
+      --accent: #2f7d5b;
+      --danger: #c2453d;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #161616;
+        --card: #202020;
+        --text: #ececec;
+        --muted: #8c8c8c;
+        --line: #2f2f2f;
+        --accent: #5fbf91;
+        --danger: #e0716a;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif;
+      display: flex;
+      justify-content: center;
+      padding: 48px 16px;
+    }
+    main {
+      width: 100%;
+      max-width: 480px;
+    }
+    h1 {
+      font-size: 1.6rem;
+      margin: 0 0 4px;
+    }
+    .summary {
+      color: var(--muted);
+      font-size: 0.9rem;
+      margin: 0 0 20px;
+    }
+    form {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+    input[type="text"] {
+      flex: 1;
+      padding: 12px 14px;
+      font-size: 1rem;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--card);
+      color: var(--text);
+    }
+    input[type="text"]:focus {
+      outline: 2px solid var(--accent);
+      outline-offset: -1px;
+    }
+    button {
+      font: inherit;
+      cursor: pointer;
+    }
+    .add-btn {
+      padding: 0 18px;
+      border: none;
+      border-radius: 10px;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 600;
+    }
+    ul {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    li {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+    }
+    li:last-child { border-bottom: none; }
+    li input[type="checkbox"] {
+      width: 20px;
+      height: 20px;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    li .name {
+      flex: 1;
+      word-break: break-word;
+    }
+    li.done .name {
+      color: var(--muted);
+      text-decoration: line-through;
+    }
+    .delete-btn {
+      border: none;
+      background: none;
+      color: var(--muted);
+      font-size: 1.2rem;
+      line-height: 1;
+      padding: 4px 6px;
+      border-radius: 6px;
+    }
+    .delete-btn:hover {
+      color: var(--danger);
+      background: color-mix(in srgb, var(--danger) 12%, transparent);
+    }
+    .empty {
+      text-align: center;
+      color: var(--muted);
+      padding: 32px 0;
+    }
+    .clear-btn {
+      margin-top: 12px;
+      border: none;
+      background: none;
+      color: var(--muted);
+      font-size: 0.9rem;
+      padding: 4px 0;
+    }
+    .clear-btn:hover { color: var(--danger); }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>🛒 쇼핑 리스트</h1>
+    <p class="summary" id="summary"></p>
+
+    <form id="add-form">
+      <input type="text" id="item-input" placeholder="살 물건을 입력하세요" autocomplete="off" maxlength="100" required>
+      <button type="submit" class="add-btn">추가</button>
+    </form>
+
+    <ul id="list"></ul>
+    <p class="empty" id="empty">아직 아무것도 없어요. 위에서 추가해 보세요.</p>
+    <button type="button" class="clear-btn" id="clear-done" hidden>체크한 항목 모두 삭제</button>
+  </main>
+
+  <script>
+    const STORAGE_KEY = "shopping-list-items";
+
+    const form = document.getElementById("add-form");
+    const input = document.getElementById("item-input");
+    const list = document.getElementById("list");
+    const empty = document.getElementById("empty");
+    const summary = document.getElementById("summary");
+    const clearDone = document.getElementById("clear-done");
+
+    let items = load();
+
+    function load() {
+      try {
+        return JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
+      } catch {
+        return [];
+      }
+    }
+
+    function save() {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+      } catch {
+        // 저장이 막힌 환경(시크릿 창 등)에서는 메모리에만 유지
+      }
+    }
+
+    function render() {
+      list.replaceChildren();
+
+      for (const item of items) {
+        const li = document.createElement("li");
+        li.className = item.done ? "done" : "";
+
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = item.done;
+        checkbox.setAttribute("aria-label", `${item.name} 체크`);
+        checkbox.addEventListener("change", () => toggle(item.id));
+
+        const name = document.createElement("span");
+        name.className = "name";
+        name.textContent = item.name;
+
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "delete-btn";
+        del.textContent = "✕";
+        del.setAttribute("aria-label", `${item.name} 삭제`);
+        del.addEventListener("click", () => remove(item.id));
+
+        li.append(checkbox, name, del);
+        list.append(li);
+      }
+
+      const doneCount = items.filter((i) => i.done).length;
+      list.hidden = items.length === 0;
+      empty.hidden = items.length > 0;
+      clearDone.hidden = doneCount === 0;
+      summary.textContent = items.length
+        ? `${items.length}개 중 ${doneCount}개 담음`
+        : "";
+    }
+
+    function add(name) {
+      items.push({ id: crypto.randomUUID(), name, done: false });
+      save();
+      render();
+    }
+
+    function toggle(id) {
+      const item = items.find((i) => i.id === id);
+      if (item) item.done = !item.done;
+      save();
+      render();
+    }
+
+    function remove(id) {
+      items = items.filter((i) => i.id !== id);
+      save();
+      render();
+    }
+
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const name = input.value.trim();
+      if (!name) return;
+      add(name);
+      input.value = "";
+      input.focus();
+    });
+
+    clearDone.addEventListener("click", () => {
+      items = items.filter((i) => !i.done);
+      save();
+      render();
+    });
+
+    render();
+  </script>
+</body>
+</html>
